@@ -53,6 +53,30 @@ namespace StardewModdingApi.Installer
             yield return GetInstallPath("smapi-internal");
             yield return GetInstallPath("steam_appid.txt");
 
+            // obsolete files
+            yield return GetInstallPath("libgdiplus.dylib");                 // before 3.13 (macOS only)
+            yield return GetInstallPath(Path.Combine("Mods", ".cache"));     // 1.3-1.4
+            yield return GetInstallPath(Path.Combine("Mods", "ErrorHandler")); // before 4.0 (no longer needed)
+            yield return GetInstallPath(Path.Combine("Mods", "TrainerMod")); // before 2.0 (renamed to ConsoleCommands)
+            yield return GetInstallPath("Mono.Cecil.Rocks.dll");             // 1.3-1.8
+            yield return GetInstallPath("StardewModdingAPI-settings.json");  // 1.0-1.4
+            yield return GetInstallPath("StardewModdingAPI.AssemblyRewriters.dll"); // 1.3-2.5.5
+            yield return GetInstallPath("0Harmony.dll");                    // moved in 2.8
+            yield return GetInstallPath("0Harmony.pdb");                    // moved in 2.8
+            yield return GetInstallPath("Mono.Cecil.dll");                  // moved in 2.8
+            yield return GetInstallPath("Newtonsoft.Json.dll");             // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.config.json");   // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.crash.marker");  // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.metadata.json"); // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.update.marker"); // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.Toolkit.dll");   // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.Toolkit.pdb");   // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.Toolkit.xml");   // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.Toolkit.CoreInterfaces.dll"); // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.Toolkit.CoreInterfaces.pdb"); // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI.Toolkit.CoreInterfaces.xml"); // moved in 2.8
+            yield return GetInstallPath("StardewModdingAPI-x64.exe");         // before 3.13
+
             // old log files
             yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StardewValley", "ErrorLogs");
         }
@@ -671,48 +695,50 @@ namespace StardewModdingApi.Installer
                     return null;
                 }
 
-                switch (context.GetGameFolderType(dir))
+                GameFolderType type = context.GetGameFolderType(dir);
+                switch (type)
                 {
                     case GameFolderType.Valid:
                         return dir;
 
-                    case GameFolderType.Legacy154OrEarlier:
-                        this.PrintWarning($"{errorPrefix} that directory seems to have Stardew Valley 1.5.4 or earlier.");
-                        this.PrintWarning("Please update your game to the latest version to use SMAPI.");
-                        return null;
-
-                    case GameFolderType.LegacyCompatibilityBranch:
-                        this.PrintWarning($"{errorPrefix} that directory seems to have the Stardew Valley legacy 'compatibility' branch.");
-                        this.PrintWarning("Unfortunately SMAPI is only compatible with the modern version of the game.");
-                        this.PrintWarning("Please update your game to the main branch to use SMAPI.");
-                        return null;
-
-                    case GameFolderType.NoGameFound:
-                        this.PrintWarning($"{errorPrefix} that directory doesn't contain a Stardew Valley executable.");
-                        return null;
-
                     default:
-                        this.PrintWarning($"{errorPrefix} that directory doesn't seem to contain a valid game install.");
+                        foreach (string message in this.GetInvalidFolderWarning(type))
+                            this.PrintWarning(message);
                         return null;
                 }
             }
 
+            // get valid install paths & log invalid ones
+            List<DirectoryInfo> defaultPaths = new();
+            foreach ((DirectoryInfo dir, GameFolderType type) in this.DetectGameFolders(toolkit, context))
+            {
+                if (type is GameFolderType.Valid)
+                {
+                    defaultPaths.Add(dir);
+                    continue;
+                }
+
+                this.PrintDebug($"Ignored game folder: {dir.FullName}");
+                foreach (string message in this.GetInvalidFolderWarning(type))
+                    this.PrintDebug(message);
+                this.PrintDebug("\n");
+            }
+
             // let user choose detected path
-            DirectoryInfo[] defaultPaths = this.DetectGameFolders(toolkit, context).ToArray();
             if (defaultPaths.Any())
             {
                 this.PrintInfo("Where do you want to add or remove SMAPI?");
                 Console.WriteLine();
-                for (int i = 0; i < defaultPaths.Length; i++)
+                for (int i = 0; i < defaultPaths.Count; i++)
                     this.PrintInfo($"[{i + 1}] {defaultPaths[i].FullName}");
-                this.PrintInfo($"[{defaultPaths.Length + 1}] Enter a custom game path.");
+                this.PrintInfo($"[{defaultPaths.Count + 1}] Enter a custom game path.");
                 Console.WriteLine();
 
-                string[] validOptions = Enumerable.Range(1, defaultPaths.Length + 1).Select(p => p.ToString(CultureInfo.InvariantCulture)).ToArray();
+                string[] validOptions = Enumerable.Range(1, defaultPaths.Count + 1).Select(p => p.ToString(CultureInfo.InvariantCulture)).ToArray();
                 string choice = this.InteractivelyChoose("Type the number next to your choice, then press enter.", validOptions);
                 int index = int.Parse(choice, CultureInfo.InvariantCulture) - 1;
 
-                if (index < defaultPaths.Length)
+                if (index < defaultPaths.Count)
                     return defaultPaths[index];
             }
             else
@@ -742,9 +768,9 @@ namespace StardewModdingApi.Installer
                 }
 
                 // get directory
-                if (File.Exists(path))
-                    path = Path.GetDirectoryName(path)!;
                 DirectoryInfo directory = new(path);
+                if (!directory.Exists && (path.EndsWith(".dll") || path.EndsWith(".exe") || File.Exists(path)) && directory.Parent is { Exists: true })
+                    directory = directory.Parent;
 
                 // validate path
                 if (!directory.Exists)
@@ -753,29 +779,16 @@ namespace StardewModdingApi.Installer
                     continue;
                 }
 
-                switch (context.GetGameFolderType(directory))
+                GameFolderType type = context.GetGameFolderType(directory);
+                switch (type)
                 {
                     case GameFolderType.Valid:
                         this.PrintInfo("   OK!");
                         return directory;
 
-                    case GameFolderType.Legacy154OrEarlier:
-                        this.PrintWarning("That directory seems to have Stardew Valley 1.5.4 or earlier.");
-                        this.PrintWarning("Please update your game to the latest version to use SMAPI.");
-                        continue;
-
-                    case GameFolderType.LegacyCompatibilityBranch:
-                        this.PrintWarning("That directory seems to have the Stardew Valley legacy 'compatibility' branch.");
-                        this.PrintWarning("Unfortunately SMAPI is only compatible with the modern version of the game.");
-                        this.PrintWarning("Please update your game to the main branch to use SMAPI.");
-                        continue;
-
-                    case GameFolderType.NoGameFound:
-                        this.PrintWarning("That directory doesn't contain a Stardew Valley executable.");
-                        continue;
-
                     default:
-                        this.PrintWarning("That directory doesn't seem to contain a valid game install.");
+                        foreach (string message in this.GetInvalidFolderWarning(type))
+                            this.PrintWarning(message);
                         continue;
                 }
             }
@@ -784,7 +797,7 @@ namespace StardewModdingApi.Installer
         /// <summary>Get the possible game paths to update.</summary>
         /// <param name="toolkit">The mod toolkit.</param>
         /// <param name="context">The installer context.</param>
-        private IEnumerable<DirectoryInfo> DetectGameFolders(ModToolkit toolkit, InstallerContext context)
+        private IEnumerable<(DirectoryInfo, GameFolderType)> DetectGameFolders(ModToolkit toolkit, InstallerContext context)
         {
             HashSet<string> foundPaths = new HashSet<string>();
 
@@ -793,10 +806,10 @@ namespace StardewModdingApi.Installer
                 DirectoryInfo? curPath = new FileInfo(Assembly.GetExecutingAssembly().Location).Directory;
                 while (curPath?.Parent != null) // must be in a folder (not at the root)
                 {
-                    if (context.LooksLikeGameFolder(curPath))
+                    if (context.GetGameFolderType(curPath) == GameFolderType.Valid)
                     {
                         foundPaths.Add(curPath.FullName);
-                        yield return curPath;
+                        yield return (curPath, GameFolderType.Valid);
                         break;
                     }
 
@@ -805,10 +818,40 @@ namespace StardewModdingApi.Installer
             }
 
             // game paths detected by toolkit
-            foreach (DirectoryInfo dir in toolkit.GetGameFolders())
+            foreach ((DirectoryInfo, GameFolderType) pair in toolkit.GetGameFoldersIncludingInvalid())
             {
-                if (foundPaths.Add(dir.FullName))
-                    yield return dir;
+                if (foundPaths.Add(pair.Item1.FullName))
+                    yield return pair;
+            }
+        }
+
+        private string[] GetInvalidFolderWarning(GameFolderType type)
+        {
+            switch (type)
+            {
+                case GameFolderType.Valid:
+                    return new[] { "OK!" }; // should never happen
+
+                case GameFolderType.LegacyVersion:
+                    return new[]
+                    {
+                        "That directory seems to have Stardew Valley 1.5.6 or earlier.",
+                        "Please update your game to the latest version to use SMAPI."
+                    };
+
+                case GameFolderType.LegacyCompatibilityBranch:
+                    return new[]
+                    {
+                        "That directory seems to have the Stardew Valley legacy 'compatibility' branch.",
+                        "Unfortunately SMAPI is only compatible with the modern version of the game.",
+                        "Please update your game to the main branch to use SMAPI."
+                    };
+
+                case GameFolderType.NoGameFound:
+                    return new[] { "That directory doesn't contain a Stardew Valley executable." };
+
+                default:
+                    return new[] { "That directory doesn't seem to contain a valid game install." };
             }
         }
 
